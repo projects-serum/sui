@@ -184,6 +184,7 @@ const MAX_PROTOCOL_VERSION: u64 = 62;
 //             Further reduce minimum number of random beacon shares.
 //             Add feature flag for Mysticeti fastpath.
 // Version 62: Makes the event's sending module package upgrade-aware.
+//             Add G1Uncompressed to sui framework.
 
 #[derive(Copy, Clone, Debug, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProtocolVersion(u64);
