@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use anemo::Network;
+use anemo::{Network, PeerId};
 use anemo_tower::{
     callback::CallbackLayer,
     trace::{DefaultMakeSpan, DefaultOnFailure, TraceLayer},
@@ -139,6 +139,13 @@ pub struct ValidatorComponents {
     checkpoint_service_exit: watch::Sender<()>,
     checkpoint_metrics: Arc<CheckpointMetrics>,
     sui_tx_validator_metrics: Arc<SuiTxValidatorMetrics>,
+}
+pub struct P2pComponents {
+    p2p_network: Network,
+    known_peers: HashMap<PeerId, String>,
+    discovery_handle: discovery::Handle,
+    state_sync_handle: state_sync::Handle,
+    randomness_handle: randomness::Handle,
 }
 
 #[cfg(msim)]
@@ -595,16 +602,21 @@ impl SuiNode {
                 .unwrap_or_default()
                 .mailbox_capacity(),
         );
-        let (p2p_network, discovery_handle, state_sync_handle, randomness_handle) =
-            Self::create_p2p_network(
-                &config,
-                state_sync_store.clone(),
-                chain_identifier,
-                trusted_peer_change_rx,
-                archive_readers.clone(),
-                randomness_tx,
-                &prometheus_registry,
-            )?;
+        let P2pComponents {
+            p2p_network,
+            known_peers,
+            discovery_handle,
+            state_sync_handle,
+            randomness_handle,
+        } = Self::create_p2p_network(
+            &config,
+            state_sync_store.clone(),
+            chain_identifier,
+            trusted_peer_change_rx,
+            archive_readers.clone(),
+            randomness_tx,
+            &prometheus_registry,
+        )?;
 
         // We must explicitly send this instead of relying on the initial value to trigger
         // watch value change, so that state-sync is able to process it.
@@ -761,8 +773,7 @@ impl SuiNode {
         let connection_monitor_handle = consensus_core::AnemoConnectionMonitor::spawn(
             p2p_network.downgrade(),
             Arc::new(network_connection_metrics),
-            // TODO: add known seed peers via discovery so metrics will update.
-            HashMap::new(),
+            known_peers,
         );
 
         let connection_monitor_status = ConnectionMonitorStatus {
@@ -1008,12 +1019,7 @@ impl SuiNode {
         archive_readers: ArchiveReaderBalancer,
         randomness_tx: mpsc::Sender<(EpochId, RandomnessRound, Vec<u8>)>,
         prometheus_registry: &Registry,
-    ) -> Result<(
-        Network,
-        discovery::Handle,
-        state_sync::Handle,
-        randomness::Handle,
-    )> {
+    ) -> Result<P2pComponents> {
         let (state_sync, state_sync_server) = state_sync::Builder::new()
             .config(config.p2p_config.state_sync.clone().unwrap_or_default())
             .store(state_sync_store)
@@ -1024,6 +1030,18 @@ impl SuiNode {
         let (discovery, discovery_server) = discovery::Builder::new(trusted_peer_change_rx)
             .config(config.p2p_config.clone())
             .build();
+
+        let discovery_config = config.p2p_config.discovery.clone().unwrap_or_default();
+        let known_peers: HashMap<PeerId, String> = discovery_config
+            .allowlisted_peers
+            .clone()
+            .into_iter()
+            .map(|ap| (ap.peer_id, "allowlisted_peer".to_string()))
+            .chain(config.p2p_config.seed_peers.iter().filter_map(|peer| {
+                peer.peer_id
+                    .map(|peer_id| (peer_id, "seed_peer".to_string()))
+            }))
+            .collect();
 
         let (randomness, randomness_router) =
             randomness::Builder::new(config.protocol_public_key(), randomness_tx)
@@ -1135,12 +1153,13 @@ impl SuiNode {
         let state_sync_handle = state_sync.start(p2p_network.clone());
         let randomness_handle = randomness.start(p2p_network.clone());
 
-        Ok((
+        Ok(P2pComponents {
             p2p_network,
+            known_peers,
             discovery_handle,
             state_sync_handle,
             randomness_handle,
-        ))
+        })
     }
 
     async fn construct_validator_components(
