@@ -74,7 +74,7 @@ pub enum PrunableTable {
 }
 
 impl PrunableTable {
-    pub fn select_lower_bound(&self, cp: u64, tx: u64) -> u64 {
+    pub fn select_reader_lo(&self, cp: u64, tx: u64) -> u64 {
         match self {
             PrunableTable::ObjectsHistory => cp,
             PrunableTable::Transactions => tx,
@@ -102,6 +102,15 @@ impl PrunableTable {
 
             PrunableTable::Checkpoints => cp,
             PrunableTable::PrunerCpWatermark => cp,
+        }
+    }
+
+    pub fn select_pruner_lo(&self, epoch_lo: u64, reader_lo: u64) -> u64 {
+        match self {
+            PrunableTable::ObjectsHistory => epoch_lo,
+            PrunableTable::Transactions => epoch_lo,
+            PrunableTable::Events => epoch_lo,
+            _ => reader_lo,
         }
     }
 }
@@ -270,11 +279,11 @@ async fn update_watermarks_lower_bounds(
         };
 
         if watermark.epoch_lo + epochs_to_keep <= watermark.epoch_hi_inclusive {
-            let new_epoch_lower_bound = watermark
+            let new_epoch_lo = watermark
                 .epoch_hi_inclusive
                 .saturating_sub(epochs_to_keep - 1);
 
-            lower_bound_updates.push((watermark.entity, new_epoch_lower_bound));
+            lower_bound_updates.push((watermark, new_epoch_lo));
         }
     }
 

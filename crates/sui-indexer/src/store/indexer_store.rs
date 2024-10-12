@@ -7,13 +7,12 @@ use async_trait::async_trait;
 use strum::IntoEnumIterator;
 
 use crate::errors::IndexerError;
-use crate::handlers::pruner::PrunableTable;
 use crate::handlers::{CommitterWatermark, EpochToCommit, TransactionObjectChangesToCommit};
 use crate::models::display::StoredDisplay;
 use crate::models::obj_indices::StoredObjectVersion;
 use crate::models::objects::{StoredDeletedObject, StoredObject};
 use crate::models::raw_checkpoints::StoredRawCheckpoint;
-use crate::models::watermarks::StoredWatermark;
+use crate::models::watermarks::{PrunableWatermark, StoredWatermark};
 use crate::types::{
     EventIndex, IndexedCheckpoint, IndexedEvent, IndexedPackage, IndexedTransaction, TxIndex,
 };
@@ -130,7 +129,7 @@ pub trait IndexerStore: Clone + Sync + Send + 'static {
     /// bounds.
     async fn update_watermarks_lower_bound(
         &self,
-        watermarks: Vec<(PrunableTable, u64)>,
+        watermarks: Vec<(PrunableWatermark, u64)>,
     ) -> Result<(), IndexerError>;
 
     /// Load all watermark entries from the store, and the latest timestamp from the db.

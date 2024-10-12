@@ -36,8 +36,8 @@ pub struct StoredWatermark {
     /// be dropped. The pruner uses this column to determine whether to prune or wait long enough
     /// that all in-flight reads complete or timeout before it acts on an updated watermark.
     pub timestamp_ms: i64,
-    /// Column used by the pruner to track its true progress. Data at and below this watermark can
-    /// be immediately pruned.
+    /// Updated and used by the pruner. Data up to and excluding this watermark can be immediately
+    /// dropped. Data between this and `reader_lo` can be pruned after a delay.
     pub pruner_lo: Option<i64>,
 }
 
@@ -74,10 +74,31 @@ impl PrunableWatermark {
         })
     }
 
-    /// Represents the first `unit` (checkpoint, tx, epoch) that has not yet been pruned. If
-    /// `pruned_lo` is not set in db, default to 0. Otherwise, this is `pruned_lo + `.
-    pub fn pruner_lo(&self) -> u64 {
-        self.pruner_lo.map_or(0, |lo| lo.saturating_add(1))
+    pub fn update(&mut self, new_epoch_lo: u64, new_reader_lo: u64) {
+        self.pruner_lo = Some(match self.entity {
+            PrunableTable::ObjectsHistory => self.epoch_lo,
+            PrunableTable::Transactions => self.epoch_lo,
+            PrunableTable::Events => self.epoch_lo,
+            _ => self.reader_lo,
+        });
+
+        self.epoch_lo = new_epoch_lo;
+        self.reader_lo = new_reader_lo;
+    }
+
+    /// Represents the exclusive upper bound of data that can be pruned immediately.
+    pub fn immediately_prunable_hi(&self) -> Option<u64> {
+        self.pruner_lo
+    }
+
+    /// Represents the lower bound of data that can be pruned after a delay.
+    pub fn delayed_prunable_lo(&self) -> Option<u64> {
+        self.pruner_lo
+    }
+
+    /// The new `pruner_lo` is the current reader_lo, or epoch_lo for epoch-partitioned tables.
+    pub fn new_pruner_lo(&self) -> u64 {
+        self.entity.select_pruner_lo(self.epoch_lo, self.reader_lo)
     }
 }
 
@@ -92,11 +113,17 @@ impl StoredWatermark {
         }
     }
 
-    pub fn from_lower_bound_update(entity: &str, epoch_lo: u64, reader_lo: u64) -> Self {
+    pub fn from_lower_bound_update(
+        entity: &str,
+        epoch_lo: u64,
+        reader_lo: u64,
+        pruner_lo: u64,
+    ) -> Self {
         StoredWatermark {
             entity: entity.to_string(),
             epoch_lo: epoch_lo as i64,
             reader_lo: reader_lo as i64,
+            pruner_lo: Some(pruner_lo as i64),
             ..StoredWatermark::default()
         }
     }

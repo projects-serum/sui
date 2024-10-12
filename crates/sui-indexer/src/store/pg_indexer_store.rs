@@ -29,7 +29,6 @@ use sui_storage::object_store::util::put;
 use crate::config::UploadOptions;
 use crate::database::ConnectionPool;
 use crate::errors::{Context, IndexerError};
-use crate::handlers::pruner::PrunableTable;
 use crate::handlers::TransactionObjectChangesToCommit;
 use crate::handlers::{CommitterWatermark, EpochToCommit};
 use crate::metrics::IndexerMetrics;
@@ -47,7 +46,7 @@ use crate::models::objects::{
 };
 use crate::models::packages::StoredPackage;
 use crate::models::transactions::StoredTransaction;
-use crate::models::watermarks::StoredWatermark;
+use crate::models::watermarks::{PrunableWatermark, StoredWatermark};
 use crate::schema::{
     chain_identifier, checkpoints, display, epochs, event_emit_module, event_emit_package,
     event_senders, event_struct_instantiation, event_struct_module, event_struct_name,
@@ -1666,7 +1665,7 @@ impl PgIndexerStore {
 
     async fn update_watermarks_lower_bound(
         &self,
-        watermarks: Vec<(PrunableTable, u64)>,
+        watermarks: Vec<(PrunableWatermark, u64)>,
     ) -> Result<(), IndexerError> {
         use diesel_async::RunQueryDsl;
 
@@ -1674,7 +1673,7 @@ impl PgIndexerStore {
         let epoch_mapping = self.map_epochs_to_cp_tx(&epochs).await?;
         let lookups: Result<Vec<StoredWatermark>, IndexerError> = watermarks
             .into_iter()
-            .map(|(table, epoch)| {
+            .map(|(watermark, epoch)| {
                 let (checkpoint, tx) = epoch_mapping.get(&epoch).ok_or_else(|| {
                     IndexerError::PersistentStorageDataCorruptionError(format!(
                         "Epoch {} not found in epoch mapping",
@@ -1683,9 +1682,10 @@ impl PgIndexerStore {
                 })?;
 
                 Ok(StoredWatermark::from_lower_bound_update(
-                    table.as_ref(),
+                    watermark.entity.as_ref(),
                     epoch,
-                    table.select_lower_bound(*checkpoint, *tx),
+                    watermark.entity.select_reader_lo(*checkpoint, *tx),
+                    watermark.new_pruner_lo(),
                 ))
             })
             .collect();
@@ -1708,6 +1708,7 @@ impl PgIndexerStore {
                     .set((
                         watermarks::reader_lo.eq(excluded(watermarks::reader_lo)),
                         watermarks::epoch_lo.eq(excluded(watermarks::epoch_lo)),
+                        watermarks::pruner_lo.eq(excluded(watermarks::pruner_lo)),
                         watermarks::timestamp_ms.eq(sql::<diesel::sql_types::BigInt>(
                             "(EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) * 1000)::bigint",
                         )),
@@ -2467,7 +2468,7 @@ impl IndexerStore for PgIndexerStore {
 
     async fn update_watermarks_lower_bound(
         &self,
-        watermarks: Vec<(PrunableTable, u64)>,
+        watermarks: Vec<(PrunableWatermark, u64)>,
     ) -> Result<(), IndexerError> {
         self.update_watermarks_lower_bound(watermarks).await
     }
