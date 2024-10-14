@@ -1962,30 +1962,36 @@ impl IndexerStore for PgIndexerStore {
             .into_iter()
             .map(|c| self.persist_object_mutation_chunk(c))
             .collect::<Vec<_>>();
-        futures::future::join_all(mutation_futures)
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                IndexerError::PostgresWriteError(format!(
-                    "Failed to persist all object mutation chunks: {:?}",
-                    e
-                ))
-            })?;
+        // futures::future::join_all(mutation_futures)
+        //     .await
+        //     .into_iter()
+        //     .collect::<Result<Vec<_>, _>>()
+        //     .map_err(|e| {
+        //         IndexerError::PostgresWriteError(format!(
+        //             "Failed to persist all object mutation chunks: {:?}",
+        //             e
+        //         ))
+        //     })?;
         let deletion_futures = object_deletion_chunks
             .into_iter()
             .map(|c| self.persist_object_deletion_chunk(c))
             .collect::<Vec<_>>();
-        futures::future::join_all(deletion_futures)
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                IndexerError::PostgresWriteError(format!(
-                    "Failed to persist all object deletion chunks: {:?}",
-                    e
-                ))
-            })?;
+        // futures::future::join_all(deletion_futures)
+        //     .await
+        //     .into_iter()
+        //     .collect::<Result<Vec<_>, _>>()
+        //     .map_err(|e| {
+        //         IndexerError::PostgresWriteError(format!(
+        //             "Failed to persist all object deletion chunks: {:?}",
+        //             e
+        //         ))
+        //     })?;
+
+        // TODOggao: handle errors
+        let (mutation_res, deletion_res) = futures::join!(
+            futures::future::join_all(mutation_futures),
+            futures::future::join_all(deletion_futures),
+        );
 
         let elapsed = guard.stop_and_record();
         info!(
