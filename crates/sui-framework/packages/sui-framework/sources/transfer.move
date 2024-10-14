@@ -122,7 +122,7 @@ public(package) native fun freeze_object_impl<T: key>(obj: T);
 
 public(package) native fun share_object_impl<T: key>(obj: T);
 
-public(package) native fun transfer_impl<T: key>(obj: T, recipient: address);
+public(package) native fun transfer_impl<T: key>(obj: T, recipient: address, ctx: &mut TxContext);
 
 native fun receive_impl<T: key>(parent: address, to_receive: ID, version: u64): T;
 
