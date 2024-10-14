@@ -86,7 +86,7 @@ macro_rules! chunk {
 // TODO: I think with the `per_db_tx` params, `PG_COMMIT_CHUNK_SIZE_INTRA_DB_TX`
 // is now less relevant. We should do experiments and remove it if it's true.
 const PG_COMMIT_CHUNK_SIZE_INTRA_DB_TX: usize = 1000;
-const PG_COMMIT_INDICES_CHUNK_SIZE_INTRA_DB_TX: usize = 5000;
+const PG_COMMIT_INDICES_CHUNK_SIZE_INTRA_DB_TX: usize = 2000;
 // The amount of rows to update in one DB transaction
 const PG_COMMIT_PARALLEL_CHUNK_SIZE: usize = 100;
 // The amount of rows to update in one DB transaction, for objects particularly
@@ -1259,6 +1259,8 @@ impl PgIndexerStore {
         use diesel_async::RunQueryDsl;
         let len = tx_affected_addresses.len();
 
+        let guard = self.metrics.tx_indices_tx_affected_addresses_commit_latency.start_timer();
+
         transaction_with_retry(
             &self.metrics,
             &self.pool,
@@ -1279,8 +1281,10 @@ impl PgIndexerStore {
         )
         .await
         .tap_ok(|_| {
+            let elapsed = guard.stop_and_record();
             info!(
-                "Persisted {} tx_affected_addresses",
+                elapsed,
+                "Persisted {} chunked tx_affected_addresses",
                 len
             );
         })
@@ -1296,8 +1300,10 @@ impl PgIndexerStore {
         tx_affected_objects: Vec<StoredTxAffectedObjects>,
     ) -> Result<(), IndexerError> {
         use diesel_async::RunQueryDsl;
-
         let len = tx_affected_objects.len();
+
+        let guard = self.metrics.tx_indices_tx_affected_objects_commit_latency.start_timer();
+
         transaction_with_retry(
             &self.metrics,
             &self.pool,
@@ -1316,8 +1322,10 @@ impl PgIndexerStore {
         )
         .await
         .tap_ok(|_| {
+            let elapsed = guard.stop_and_record();
             info!(
-                "Persisted {} tx_affected_objects",
+                elapsed,
+                "Persisted {} chunked tx_affected_objects",
                 len
             );
         })
@@ -2160,42 +2168,6 @@ impl IndexerStore for PgIndexerStore {
         Ok(())
     }
 
-    async fn persist_objects_version_unpartitioned(
-        &self,
-        object_versions: Vec<StoredObjectVersionUnpartitioned>,
-    ) -> Result<(), IndexerError> {
-        if object_versions.is_empty() {
-            return Ok(());
-        }
-
-        let guard = self
-            .metrics
-            .checkpoint_db_commit_latency_objects_version_unpartitioned
-            .start_timer();
-
-        let len = object_versions.len();
-        let chunks = chunk!(object_versions, self.config.parallel_objects_chunk_size);
-        let futures = chunks
-            .into_iter()
-            .map(|c| self.persist_objects_version_unpartitioned_chunk(c))
-            .collect::<Vec<_>>();
-
-        futures::future::join_all(futures)
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                IndexerError::PostgresWriteError(format!(
-                    "Failed to persist all objects version (unpartitioned) chunks: {:?}",
-                    e
-                ))
-            })?;
-
-        let elapsed = guard.stop_and_record();
-        info!(elapsed, "Persisted {} object versions (unpartitioned)", len);
-        Ok(())
-    }
-
     async fn persist_checkpoints(
         &self,
         checkpoints: Vec<IndexedCheckpoint>,
@@ -2461,12 +2433,18 @@ impl IndexerStore for PgIndexerStore {
                 },
             );
 
-        let tx_affected_addresses_futures = chunk!(affected_addresses, PG_COMMIT_INDICES_CHUNK_SIZE_INTRA_DB_TX)
+        // read from env the indices chunk sizes
+        let indices_chunk_size = std::env::var("INDICES_CHUNK_SIZE")
+            .unwrap_or("2000".to_string())
+            .parse::<usize>()
+            .unwrap();
+
+        let tx_affected_addresses_futures = chunk!(affected_addresses, indices_chunk_size)
             .into_iter()
             .map(|chunk| self.persist_tx_affected_addresses_chunk(chunk))
             .collect::<Vec<_>>();
 
-        let tx_affected_objects_futures = chunk!(affected_objects, PG_COMMIT_INDICES_CHUNK_SIZE_INTRA_DB_TX)
+        let tx_affected_objects_futures = chunk!(affected_objects, indices_chunk_size)
             .into_iter()
             .map(|chunk| self.persist_tx_affected_objects_chunk(chunk))
             .collect::<Vec<_>>();
@@ -2496,6 +2474,7 @@ impl IndexerStore for PgIndexerStore {
             .map(|chunk| self.persist_tx_kinds_chunk(chunk))
             .collect::<Vec<_>>();
 
+        // TODOggao: handle errors
         let (tx_affected_addresses_res, tx_affected_objects_res, tx_pkgs_res, tx_mods_res, tx_funs_res, tx_digests_res, tx_kinds_res) = futures::join!(
             futures::future::join_all(tx_affected_addresses_futures),
             futures::future::join_all(tx_affected_objects_futures),
